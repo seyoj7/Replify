@@ -1,5 +1,7 @@
 :root {
     --surface-container-lowest: #0a0f13;
+    --surface-container-low: #0d1216;
+    --surface-container: #141a1e;
     --on-surface-variant: #cfc4c5;
     --secondary-container: #1097eb;
     --on-tertiary-container: #9c49eb;
@@ -7,6 +9,7 @@
     --outline-variant: #4c4546;
     --on-surface: #dee3e8;
     --secondary: #99cbff;
+    --primary: #1097eb;
     --surface-container-highest: #30353a;
     --surface-dim: #0f1418;
     --outline: #988e90;
@@ -140,7 +143,7 @@ header h1 {
 
 main {
     flex: 1;
-    overflow: hidden;
+    overflow-y: auto;
     padding: var(--stack-space) var(--container-padding);
     display: flex;
     flex-direction: column;

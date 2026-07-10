@@ -1,14 +1,14 @@
 import os
+import re
 import json
 import httpx
-import urllib.request
-import re
-import traceback
 import uvicorn
+import traceback
+import urllib.request
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import List, Optional
 
 load_dotenv()
@@ -17,7 +17,7 @@ app = FastAPI()
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
