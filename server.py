@@ -131,8 +131,11 @@ async def generate_replies(request: GenerateRepliesRequest):
             return GenerateRepliesResponse(replies=replies[:request.num_variations])
 
     except httpx.HTTPStatusError as e:
+        print(f"[ERROR] NVIDIA API returned {e.response.status_code}: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=f"NVIDIA API Error: {e.response.text}")
     except Exception as e:
+        traceback.print_exc()
+        print(f"[ERROR] Unexpected error: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 if __name__ == "__main__":
