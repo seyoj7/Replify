@@ -1,10 +1,11 @@
 import os
 import re
 import json
+import asyncio
 import httpx
 import uvicorn
 import traceback
-import urllib.request
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -12,7 +13,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 
 load_dotenv()
-app = FastAPI()
+
+# Persistent HTTP client — reuses TCP/TLS connections across requests
+http_client: httpx.AsyncClient | None = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_client
+    http_client = httpx.AsyncClient(
+        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        timeout=httpx.Timeout(60.0, connect=10.0),
+    )
+    yield
+    await http_client.aclose()
+
+app = FastAPI(lifespan=lifespan)
 
 # Enable CORS
 app.add_middleware(
@@ -53,13 +68,14 @@ async def generate_replies(request: GenerateRepliesRequest):
             
             api_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token=1"
             
-            req = urllib.request.Request(
-                api_url, 
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            # Async fetch — doesn't block the event loop
+            tweet_response = await http_client.get(
+                api_url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
+                timeout=10.0,
             )
-            
-            with urllib.request.urlopen(req, timeout=10.0) as response:
-                data = json.loads(response.read().decode())
+            tweet_response.raise_for_status()
+            data = tweet_response.json()
                 
             # Extract the actual text of the tweet
             post_content = data.get("text", "")
@@ -92,43 +108,58 @@ async def generate_replies(request: GenerateRepliesRequest):
             {"role": "user", "content": f"Post: {post_content}"}
         ],
         "temperature": 0.7,
-        "max_tokens": 1024,
+        "max_tokens": 512,
     }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
+    # Retry up to 3 times for transient failures (timeouts, rate limits)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await http_client.post(
                 "https://integrate.api.nvidia.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30.0
             )
+            # Handle 429 rate limit with retry
+            if response.status_code == 429 and attempt < max_retries - 1:
+                wait = (attempt + 1) * 1  # 1s, 2s backoff
+                print(f"[WARN] Rate limited (429), retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait)
+                continue
             response.raise_for_status()
             data = response.json()
+            break  # Success — exit retry loop
+        except httpx.ReadTimeout:
+            if attempt < max_retries - 1:
+                print(f"[WARN] ReadTimeout, retrying (attempt {attempt + 1}/{max_retries})")
+                continue
+            raise  # Final attempt failed — let outer handler catch it
+
+    try:
             
-            # Extract content from the LLM response
-            content = data["choices"][0]["message"]["content"].strip()
-            
-            # Clean up the output in case it includes markdown json blocks
-            if content.startswith("```json"):
-                content = content[7:]
-            elif content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
-            # Parse the JSON list
-            try:
-                replies = json.loads(content)
-                if not isinstance(replies, list):
-                    replies = [str(replies)]
-            except json.JSONDecodeError:
-                # Fallback: simple line split if JSON parsing fails
-                replies = [line.strip(' -*1234567890."\'') for line in content.split('\n') if line.strip()]
-            
-            # Ensure we return exactly the requested number of variations
-            return GenerateRepliesResponse(replies=replies[:request.num_variations])
+        # Extract content from the LLM response
+        content = data["choices"][0]["message"]["content"].strip()
+        
+        # Clean up the output in case it includes markdown json blocks
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        # Parse the JSON list
+        try:
+            replies = json.loads(content)
+            if not isinstance(replies, list):
+                replies = [str(replies)]
+        except json.JSONDecodeError:
+            # Fallback: simple line split if JSON parsing fails
+            replies = [line.strip(' -*1234567890."\'') for line in content.split('\n') if line.strip()]
+        
+        # Ensure we return exactly the requested number of variations
+        return GenerateRepliesResponse(replies=replies[:request.num_variations])
 
     except httpx.HTTPStatusError as e:
         print(f"[ERROR] NVIDIA API returned {e.response.status_code}: {e.response.text}")
